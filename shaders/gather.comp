@@ -1,0 +1,21 @@
+#version 450
+// dst[i] = src[rows[i]], rows of `width` floats: each sequence's [CLS] row.
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly restrict buffer Src { float src[]; };
+layout(std430, binding = 1) readonly restrict buffer Meta { uint meta[]; };
+layout(std430, binding = 2) writeonly restrict buffer Dst { float dst[]; };
+layout(push_constant) uniform PC {
+    uint count;
+    uint width;
+    uint rows;
+} pc;
+
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g >= pc.count * pc.width)
+        return;
+    uint i = g / pc.width;
+    uint c = g - i * pc.width;
+    dst[g] = src[meta[pc.rows + i] * pc.width + c];
+}

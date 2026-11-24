@@ -1,0 +1,32 @@
+# cargo-deny policy. The license list holds what the dependencies use; widen
+# it only with the reason next to the change.
+
+[graph]
+all-features = false
+
+[advisories]
+yanked = "deny"
+ignore = []
+
+[licenses]
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "Unicode-3.0",
+]
+confidence-threshold = 0.93
+
+# The crate's own license (MIT AND BSD-3-Clause) is declared in Cargo.toml.
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

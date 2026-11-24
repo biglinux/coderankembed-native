@@ -1,0 +1,140 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : require
+#ifdef HALF_PRODUCTS
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#endif
+// out[r][c] (+)= sum_k a[r][k] * w[c][k]: a linear layer, `w` being a
+// PyTorch weight (`n` rows of `k`) in half floats, everything else in floats.
+//
+// A workgroup computes a 128 x 128 tile, each invocation 8 rows by 8
+// columns, over blocks of 16 k staged in shared memory: per step, four vec4
+// reads of shared memory feed 64 multiply-adds.
+//
+// With HALF_PRODUCTS the tiles are half floats and the products of each 8 k
+// are summed in half floats, which a GPU runs two at a time, then added to
+// sums in floats. On AMD's Vega and NVIDIA's Turing that is 1.3 to 1.6
+// times faster and moves the embeddings by at most 4e-6 of their cosine;
+// Intel's driver runs it slower and less exactly, so the encoder picks it
+// per vendor (src/gpu.rs). `n` is a multiple of 128 and `k` of 16; the
+// strides are multiples of 4, so rows load as vec4s.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) readonly restrict buffer A { vec4 a[]; };
+layout(std430, binding = 1) readonly restrict buffer W { uvec2 w[]; };
+layout(std430, binding = 2) restrict buffer Out { vec4 o[]; };
+layout(push_constant) uniform PC {
+    uint m;
+    uint n;
+    uint k;
+    uint a_stride;
+    uint out_stride;
+    uint accumulate;
+} pc;
+
+const uint TILE = 128;
+const uint BK = 16;
+
+#ifdef HALF_PRODUCTS
+#define TILE_VEC f16vec4
+#define UNPACK unpackFloat2x16
+// Products summed in half floats before they join the float sums.
+const uint HALF_RUN = 8;
+#else
+#define TILE_VEC vec4
+#define UNPACK unpackHalf2x16
+#endif
+// Transposed tiles: as[k][rows / 4] holds four consecutive rows of column k.
+shared TILE_VEC as[BK][TILE / 4];
+shared TILE_VEC ws[BK][TILE / 4];
+
+void main() {
+    uint tid = gl_LocalInvocationIndex;
+    uint tx = gl_LocalInvocationID.x;
+    uint ty = gl_LocalInvocationID.y;
+    uint r0 = gl_WorkGroupID.y * TILE;
+    uint c0 = gl_WorkGroupID.x * TILE;
+    // Each invocation loads four values of two rows of each tile, 64 apart.
+    uint lr = tid >> 2;
+    uint lk = (tid & 3) << 2;
+    bool row_in[2] = bool[2](r0 + lr < pc.m, r0 + lr + 64 < pc.m);
+    uint a_at[2];
+    uint w_at[2];
+    [[unroll]] for (uint h = 0; h < 2; h++) {
+        a_at[h] = ((r0 + lr + 64 * h) * pc.a_stride + lk) >> 2;
+        w_at[h] = ((c0 + lr + 64 * h) * pc.k + lk) >> 2;
+    }
+    vec4 acc[8][2];
+    [[unroll]] for (uint i = 0; i < 8; i++) {
+        acc[i][0] = vec4(0.0);
+        acc[i][1] = vec4(0.0);
+    }
+    for (uint k0 = 0; k0 < pc.k; k0 += BK) {
+        TILE_VEC av[2];
+        TILE_VEC wv[2];
+        [[unroll]] for (uint h = 0; h < 2; h++) {
+            av[h] = row_in[h] ? TILE_VEC(a[a_at[h] + (k0 >> 2)]) : TILE_VEC(0.0);
+            uvec2 half4 = w[w_at[h] + (k0 >> 2)];
+            wv[h] = TILE_VEC(UNPACK(half4.x), UNPACK(half4.y));
+        }
+        barrier();
+        [[unroll]] for (uint h = 0; h < 2; h++) {
+            uint row = lr + 64 * h;
+            [[unroll]] for (uint i = 0; i < 4; i++) {
+                as[lk + i][row >> 2][row & 3] = av[h][i];
+                ws[lk + i][row >> 2][row & 3] = wv[h][i];
+            }
+        }
+        barrier();
+#ifdef HALF_PRODUCTS
+        [[unroll]] for (uint run = 0; run < BK; run += HALF_RUN) {
+            f16vec4 part[8][2];
+            [[unroll]] for (uint i = 0; i < 8; i++) {
+                part[i][0] = f16vec4(0.0);
+                part[i][1] = f16vec4(0.0);
+            }
+            [[unroll]] for (uint kk = run; kk < run + HALF_RUN; kk++) {
+                f16vec4 a0 = as[kk][2 * ty];
+                f16vec4 a1 = as[kk][2 * ty + 1];
+                f16vec4 w0 = ws[kk][2 * tx];
+                f16vec4 w1 = ws[kk][2 * tx + 1];
+                [[unroll]] for (uint i = 0; i < 4; i++) {
+                    part[i][0] = fma(f16vec4(a0[i]), w0, part[i][0]);
+                    part[i][1] = fma(f16vec4(a0[i]), w1, part[i][1]);
+                    part[4 + i][0] = fma(f16vec4(a1[i]), w0, part[4 + i][0]);
+                    part[4 + i][1] = fma(f16vec4(a1[i]), w1, part[4 + i][1]);
+                }
+            }
+            [[unroll]] for (uint i = 0; i < 8; i++) {
+                acc[i][0] += vec4(part[i][0]);
+                acc[i][1] += vec4(part[i][1]);
+            }
+        }
+#else
+        [[unroll]] for (uint kk = 0; kk < BK; kk++) {
+            vec4 a0 = as[kk][2 * ty];
+            vec4 a1 = as[kk][2 * ty + 1];
+            vec4 w0 = ws[kk][2 * tx];
+            vec4 w1 = ws[kk][2 * tx + 1];
+            [[unroll]] for (uint i = 0; i < 4; i++) {
+                acc[i][0] += a0[i] * w0;
+                acc[i][1] += a0[i] * w1;
+                acc[4 + i][0] += a1[i] * w0;
+                acc[4 + i][1] += a1[i] * w1;
+            }
+        }
+#endif
+    }
+    [[unroll]] for (uint i = 0; i < 8; i++) {
+        uint r = r0 + ty * 8 + i;
+        if (r < pc.m) {
+            uint at = (r * pc.out_stride + c0 + tx * 8) >> 2;
+            if (pc.accumulate != 0) {
+                acc[i][0] += o[at];
+                acc[i][1] += o[at + 1];
+            }
+            o[at] = acc[i][0];
+            o[at + 1] = acc[i][1];
+        }
+    }
+}

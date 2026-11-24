@@ -1,0 +1,11 @@
+id: model-error-path
+language: rust
+severity: error
+message: Name a model file in an error through Error::model in src/lib.rs.
+rule:
+  pattern: Error::Model($$$)
+  # A macro's arguments are tokens, not expressions: match the call's text.
+  regex: \.display\(\)
+ignores:
+  # Where Error::model is defined.
+  - src/lib.rs

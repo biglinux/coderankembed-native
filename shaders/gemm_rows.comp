@@ -1,0 +1,81 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : require
+// gemm.comp for at most 32 rows, as a query's: out[r][c] (+)= sum_k
+// a[r][k] * w[c][k], with the same buffers and push constants.
+//
+// A product of few rows is bound by reading the weights, which gemm.comp's
+// 128-row tiles mostly spend on rows that do not exist. Here each weight is
+// read once: a workgroup takes 32 columns, eight invocations a column, each
+// summing every eighth group of four k for all the rows, which are staged
+// 256 k at a time in shared memory; the eight partial sums are added at the
+// end. Past 32 rows its shared-memory reads cost more than gemm.comp's
+// tiles. `n` and `k` are multiples of 32.
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly restrict buffer A { vec4 a[]; };
+layout(std430, binding = 1) readonly restrict buffer W { uvec2 w[]; };
+layout(std430, binding = 2) restrict buffer Out { float o[]; };
+layout(push_constant) uniform PC {
+    uint m;
+    uint n;
+    uint k;
+    uint a_stride;
+    uint out_stride;
+    uint accumulate;
+} pc;
+
+const uint ROWS = 32;
+const uint COLS = 32;
+const uint LANES = 8;
+// k staged at a time: each lane takes eight groups of four.
+const uint KT = 256;
+
+shared vec4 tile[ROWS][KT / 4];
+shared float partial[LANES][COLS];
+
+void main() {
+    uint tid = gl_LocalInvocationIndex;
+    uint col = tid / LANES;
+    uint lane = tid - col * LANES;
+    uint c = gl_WorkGroupID.x * COLS + col;
+    uint w_row = c * pc.k >> 2;
+    float acc[ROWS];
+    [[unroll]] for (uint r = 0; r < ROWS; r++)
+        acc[r] = 0.0;
+    for (uint k0 = 0; k0 < pc.k; k0 += KT) {
+        // Groups of four k in this stage: KT / 4, fewer in the last.
+        uint groups = min(KT, pc.k - k0) >> 2;
+        barrier();
+        for (uint e = tid; e < pc.m * groups; e += 256) {
+            uint r = e / groups;
+            uint q = e - r * groups;
+            tile[r][q] = a[((r * pc.a_stride + k0) >> 2) + q];
+        }
+        barrier();
+        [[unroll]] for (uint j = 0; j < KT / 4 / LANES; j++) {
+            uint q = j * LANES + lane;
+            if (q >= groups)
+                break;
+            uvec2 h = w[w_row + (k0 >> 2) + q];
+            vec4 wv = vec4(unpackHalf2x16(h.x), unpackHalf2x16(h.y));
+            [[unroll]] for (uint r = 0; r < ROWS; r++) {
+                if (r < pc.m)
+                    acc[r] += dot(tile[r][q], wv);
+            }
+        }
+    }
+    [[unroll]] for (uint r = 0; r < ROWS; r++) {
+        if (r >= pc.m)
+            break;
+        partial[lane][col] = acc[r];
+        barrier();
+        if (lane == 0) {
+            float sum = 0.0;
+            [[unroll]] for (uint l = 0; l < LANES; l++)
+                sum += partial[l][col];
+            uint at = r * pc.out_stride + c;
+            o[at] = pc.accumulate != 0 ? o[at] + sum : sum;
+        }
+        barrier();
+    }
+}

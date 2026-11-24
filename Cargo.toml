@@ -1,0 +1,70 @@
+[package]
+name = "coderankembed-native"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT AND BSD-3-Clause"
+authors = ["Bruno Gonçalves <www.biglinux.com.br>"]
+description = "CodeRankEmbed code embeddings in plain Rust, on the CPU with SIMD or on a Vulkan GPU: no PyTorch, no ONNX Runtime"
+repository = "https://github.com/biglinux/coderankembed-native"
+homepage = "https://www.biglinux.com.br"
+publish = false
+
+[[bin]]
+name = "coderankembed"
+path = "src/bin/coderankembed/main.rs"
+
+[dependencies]
+serde_json = "1"
+unicode-normalization = "0.1"
+unicode_categories = "0.1"
+
+[lints.rust]
+# `cargo fuzz` sets cfg(fuzzing), which exposes the fuzz targets' bodies.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+deprecated = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.cargo]
+unused_dependencies = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+exit = "deny"
+undocumented_unsafe_blocks = "deny"
+unnecessary_safety_comment = "deny"
+unwrap_used = "deny"
+allow_attributes_without_reason = "deny"
+unused_result_ok = "warn"
+significant_drop_in_scrutinee = "warn"
+unchecked_time_subtraction = "warn"
+read_zero_byte_vec = "warn"
+path_buf_push_overwrite = "warn"
+debug_assert_with_mut_call = "warn"
+unused_peekable = "warn"
+redundant_clone = "warn"
+implicit_clone = "warn"
+cloned_instead_of_copied = "warn"
+inefficient_to_string = "warn"
+unnecessary_join = "warn"
+manual_instant_elapsed = "warn"
+large_futures = "warn"
+cast_lossless = "warn"
+non_std_lazy_statics = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+ignore_without_reason = "warn"
+should_panic_without_expect = "warn"
+redundant_test_prefix = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[profile.profiling]
+inherits = "release"
+debug = true

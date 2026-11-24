@@ -1,0 +1,62 @@
+# Maintainer: Bruno Gonçalves <www.biglinux.com.br>
+# shellcheck shell=bash disable=SC2034,SC2154
+
+pkgname=coderankembed-native
+pkgdesc="CodeRankEmbed code search and embeddings on the CPU or a Vulkan GPU in plain Rust; the model is downloaded separately"
+
+# Rolling package, versioned by build date like ppocr-native.
+# makepkg sources this file again after the build; SOURCE_DATE_EPOCH, which it
+# fixes at start, keeps the date from moving between the build and the package.
+pkgver=$(date -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%y.%m.%d)
+pkgrel=$(date -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%H%M)
+# The vector kernels and the tests across their tiers are x86_64's. The code
+# also builds for other architectures, with its plain Rust kernel.
+arch=('x86_64')
+url="https://github.com/biglinux/coderankembed-native"
+# BSD-3-Clause for the exponential that follows XNNPACK (NOTICE).
+license=('MIT' 'BSD-3-Clause')
+depends=('glibc' 'libgcc')
+# The model, nomic-ai/CodeRankEmbed, is not packaged: the program reads its
+# files from the Hugging Face cache or --model DIR (README, Install).
+optdepends=(
+	'git: index lists what git tracks in a work tree, and refuses one without it'
+	'vulkan-icd-loader: --device gpu, with a Vulkan 1.2 driver'
+)
+# glslc, from shaderc, compiles the shaders build.rs embeds.
+makedepends=('cargo' 'git' 'shaderc')
+
+source=("${pkgname}::git+${url}.git")
+sha256sums=('SKIP')
+
+prepare() {
+	cd "${srcdir}/${pkgname}" || return 1
+	export RUSTUP_TOOLCHAIN=stable
+	cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+	cd "${srcdir}/${pkgname}" || return 1
+	export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target CARGO_INCREMENTAL=0
+	cargo build --frozen --release --bin coderankembed
+}
+
+check() {
+	cd "${srcdir}/${pkgname}" || return 1
+	export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target CARGO_INCREMENTAL=0
+	# The ignored tests need the model's files and a GPU, which a build machine
+	# need not have. Kernels are chosen at run time: every tier must pass the
+	# same tests.
+	cargo test --frozen --release
+	if [[ $CARCH == x86_64 ]]; then
+		local tier
+		for tier in 0 1; do
+			CODERANKEMBED_TIER=$tier cargo test --frozen --release --lib
+		done
+	fi
+}
+
+package() {
+	cd "${srcdir}/${pkgname}" || return 1
+	install -Dm755 target/release/coderankembed -t "${pkgdir}/usr/bin"
+	install -Dm644 LICENSE NOTICE -t "${pkgdir}/usr/share/licenses/${pkgname}"
+}

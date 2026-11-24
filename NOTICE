@@ -1,0 +1,59 @@
+coderankembed-native
+Copyright 2026 Bruno Gonçalves <www.biglinux.com.br>
+
+A Rust implementation of the CodeRankEmbed encoder for the CPU and for
+Vulkan GPUs, provided under MIT (LICENSE). It reads the model's published
+files and ships none of its weights; tests/data/config.json is the model's
+own configuration, as nomic-ai/CodeRankEmbed publishes it under MIT. It
+builds on the work below.
+
+1. CodeRankEmbed (MIT), by Tarun Suresh, Revanth Gangi Reddy, Yifei Xu,
+   Zach Nussbaum, Andriy Mulyar, Brandon Duderstadt and Heng Ji: the
+   encoder trained on CoRNStack, whose NomicBERT architecture and
+   sentence-transformers pooling this crate reproduces.
+   https://huggingface.co/nomic-ai/CodeRankEmbed
+   https://github.com/gangiswag/cornstack
+
+2. XNNPACK (BSD-3-Clause), by Facebook, Inc. and its affiliates and Google
+   LLC. The exponential under the softmax and the sigmoid computes as
+   XNNPACK's f32 "p5" kernels do for finite values: the same constants and
+   argument reduction, written anew in Rust (src/math.rs). The left operand
+   of every matrix product is read through row pointers, as XNNPACK's
+   indirect convolution reads it (src/gemm.rs).
+   https://github.com/google/XNNPACK
+   XNNPACK's license follows as notice A.
+
+
+A. XNNPACK, https://github.com/google/XNNPACK
+
+BSD License
+
+For XNNPACK software
+
+Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
+Copyright 2019 Google LLC
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook nor the names of its contributors may be used to
+   endorse or promote products derived from this software without specific
+   prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

@@ -1,0 +1,45 @@
+#version 450
+// Layer normalization of each row of `width` floats in place, one workgroup
+// a row: the mean, then the variance about it, as two sums.
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) restrict buffer X { float x[]; };
+// The scale, then the shift.
+layout(std430, binding = 1) readonly restrict buffer Norm { float norm[]; };
+layout(push_constant) uniform PC {
+    uint width;
+    float eps;
+} pc;
+
+shared float partial[256];
+
+float total(float v) {
+    uint lid = gl_LocalInvocationID.x;
+    partial[lid] = v;
+    barrier();
+    for (uint step = 128; step > 0; step >>= 1) {
+        if (lid < step)
+            partial[lid] += partial[lid + step];
+        barrier();
+    }
+    float sum = partial[0];
+    barrier();
+    return sum;
+}
+
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+    uint row = gl_WorkGroupID.x * pc.width;
+    float sum = 0.0;
+    for (uint i = lid; i < pc.width; i += 256)
+        sum += x[row + i];
+    float mean = total(sum) / float(pc.width);
+    float squares = 0.0;
+    for (uint i = lid; i < pc.width; i += 256) {
+        float d = x[row + i] - mean;
+        squares += d * d;
+    }
+    float inv = inversesqrt(total(squares) / float(pc.width) + pc.eps);
+    for (uint i = lid; i < pc.width; i += 256)
+        x[row + i] = (x[row + i] - mean) * inv * norm[i] + norm[pc.width + i];
+}

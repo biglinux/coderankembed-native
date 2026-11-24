@@ -1,0 +1,95 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : require
+// Self-attention of one head over one sequence for up to 64 query rows, one
+// invocation a row, over tiles of 32 keys and values staged in shared
+// memory: the softmax runs online, rescaling the sums once a tile, so no
+// score matrix is ever stored. Queries come rotated and scaled (rope.comp).
+//
+// A task is 8 words: the sequence's first token and length, the first query
+// token and the query count, and the output row of the first query.
+//
+// No value is ever infinite: drivers may compile as if none were (NVIDIA's
+// turned a select of -inf into 0), so keys past the sequence are skipped,
+// not masked, and the running maximum starts at the lowest float.
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly restrict buffer Qkv { vec4 qkv[]; };
+layout(std430, binding = 1) readonly restrict buffer Meta { uint meta[]; };
+layout(std430, binding = 2) writeonly restrict buffer Out { vec4 o[]; };
+layout(push_constant) uniform PC {
+    uint hidden;
+    uint tasks;
+} pc;
+
+const uint D4 = 16;  // head dim / 4
+const uint KEYS = 32;
+
+shared vec4 ks[KEYS][D4];
+shared vec4 vs[KEYS][D4];
+
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+    uint task = pc.tasks + gl_WorkGroupID.x * 8;
+    uint seq = meta[task];
+    uint len = meta[task + 1];
+    uint q_first = meta[task + 2];
+    uint q_count = meta[task + 3];
+    uint out_first = meta[task + 4];
+    uint head = gl_WorkGroupID.y;
+    uint row4 = 3 * pc.hidden >> 2;
+    uint head4 = head * D4;
+    uint hidden4 = pc.hidden >> 2;
+    bool live = lid < q_count;
+
+    vec4 q[D4];
+    vec4 acc[D4];
+    [[unroll]] for (uint d = 0; d < D4; d++) {
+        q[d] = live ? qkv[(q_first + lid) * row4 + head4 + d] : vec4(0.0);
+        acc[d] = vec4(0.0);
+    }
+    float m = -3.402823e38;
+    float l = 0.0;
+    for (uint k0 = 0; k0 < len; k0 += KEYS) {
+        barrier();
+        // 64 invocations stage 32 keys and values of 16 vec4s each.
+        [[unroll]] for (uint e = lid; e < KEYS * D4; e += 64) {
+            uint j = e / D4;
+            uint d = e - j * D4;
+            bool in_seq = k0 + j < len;
+            uint at = (seq + k0 + j) * row4 + head4 + d;
+            ks[j][d] = in_seq ? qkv[at + hidden4] : vec4(0.0);
+            vs[j][d] = in_seq ? qkv[at + 2 * hidden4] : vec4(0.0);
+        }
+        barrier();
+        if (!live)
+            continue;
+        uint keys = min(KEYS, len - k0);
+        float s[KEYS];
+        float tile_max = m;
+        [[unroll]] for (uint j = 0; j < KEYS; j++) {
+            s[j] = 0.0;
+            [[unroll]] for (uint d = 0; d < D4; d++)
+                s[j] += dot(q[d], ks[j][d]);
+            if (j < keys)
+                tile_max = max(tile_max, s[j]);
+        }
+        float correction = exp(m - tile_max);
+        l *= correction;
+        [[unroll]] for (uint d = 0; d < D4; d++)
+            acc[d] *= correction;
+        [[unroll]] for (uint j = 0; j < KEYS; j++) {
+            if (j < keys) {
+                float p = exp(s[j] - tile_max);
+                l += p;
+                [[unroll]] for (uint d = 0; d < D4; d++)
+                    acc[d] += p * vs[j][d];
+            }
+        }
+        m = tile_max;
+    }
+    if (!live)
+        return;
+    float inv = 1.0 / l;
+    [[unroll]] for (uint d = 0; d < D4; d++)
+        o[(out_first + lid) * hidden4 + head4 + d] = acc[d] * inv;
+}

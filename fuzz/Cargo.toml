@@ -1,0 +1,36 @@
+[package]
+name = "coderankembed-native-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+coderankembed-native = { path = ".." }
+
+[[bin]]
+name = "safetensors"
+path = "fuzz_targets/safetensors.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tokenizer_json"
+path = "fuzz_targets/tokenizer_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tokenize"
+path = "fuzz_targets/tokenize.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace, so that the crate's builds never compile the fuzzer.
+[workspace]

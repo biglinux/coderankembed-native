@@ -1,0 +1,40 @@
+#version 450
+// Rotate each token's queries and keys by its position (rotary embeddings,
+// the two halves of each head rotated together), and scale the queries by
+// 1 / sqrt(head dim). One invocation per pair of rotated values.
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) restrict buffer Qkv { float qkv[]; };
+// Each token's position, then the cos and sin tables, `half` values a
+// position, from `tables` on.
+layout(std430, binding = 1) readonly restrict buffer Meta { uint meta[]; };
+layout(std430, binding = 2) readonly restrict buffer Tables { float tables[]; };
+layout(push_constant) uniform PC {
+    uint tokens;
+    uint hidden;
+    uint half_dim;
+    uint sin_off;
+    float scale;
+} pc;
+
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g >= pc.tokens * pc.hidden)
+        return;
+    // `hidden` pairs a token: those of the queries, then of the keys.
+    uint token = g / pc.hidden;
+    uint pair = g - token * pc.hidden;
+    uint part = pair / (pc.hidden >> 1);
+    uint within = pair - part * (pc.hidden >> 1);
+    uint head = within / pc.half_dim;
+    uint i = within - head * pc.half_dim;
+    uint at = token * 3 * pc.hidden + part * pc.hidden + head * 2 * pc.half_dim + i;
+    uint p = meta[token] * pc.half_dim + i;
+    float c = tables[p];
+    float s = tables[pc.sin_off + p];
+    float x1 = qkv[at];
+    float x2 = qkv[at + pc.half_dim];
+    float scale = part == 0 ? pc.scale : 1.0;
+    qkv[at] = (x1 * c - x2 * s) * scale;
+    qkv[at + pc.half_dim] = (x2 * c + x1 * s) * scale;
+}
